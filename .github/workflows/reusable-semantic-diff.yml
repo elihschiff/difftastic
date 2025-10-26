@@ -144,7 +144,7 @@ jobs:
           MARKDOWN_FILE="diff_output/diff_summary.md"
           echo "# Semantic Diff Summary" > "$MARKDOWN_FILE"
           echo "" >> "$MARKDOWN_FILE"
-          echo "Comparing \`$BASE_SHA\` → \`$HEAD_SHA\`" >> "$MARKDOWN_FILE"
+          echo "**Files with changes** (scroll down to see colored image view):" >> "$MARKDOWN_FILE"
           echo "" >> "$MARKDOWN_FILE"
 
           # Create HTML output file
@@ -389,16 +389,8 @@ jobs:
                       </div>
           HTMLPART
 
-              # Add to markdown (collapsed by default)
-              # Use <pre> tag to preserve difftastic's formatting better than code blocks
-              echo "<details>" >> "$MARKDOWN_FILE"
-              echo "<summary><code>$DISPLAY_NAME</code></summary>" >> "$MARKDOWN_FILE"
-              echo "" >> "$MARKDOWN_FILE"
-              echo "<pre>" >> "$MARKDOWN_FILE"
-              echo "$DIFF_OUTPUT_NO_COLOR" >> "$MARKDOWN_FILE"
-              echo "</pre>" >> "$MARKDOWN_FILE"
-              echo "" >> "$MARKDOWN_FILE"
-              echo "</details>" >> "$MARKDOWN_FILE"
+              # Add minimal text entry - point to image for better readability
+              echo "- **$DISPLAY_NAME** - [See colored diff in image below](#-view-diff-as-image-click-to-expand)" >> "$MARKDOWN_FILE"
               echo "" >> "$MARKDOWN_FILE"
             else
               echo "  → No changes detected"
