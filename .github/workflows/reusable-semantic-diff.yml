@@ -37,32 +37,39 @@ jobs:
         run: |
           git fetch origin ${{ github.event.pull_request.base.ref }}
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-difftastic-${{ inputs.difftastic-version }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-difftastic-
-
-      - name: Install difftastic
+      - name: Download difftastic binary
         run: |
+          # Determine version to download
           if [ -n "${{ inputs.difftastic-version }}" ]; then
-            echo "Installing difftastic version ${{ inputs.difftastic-version }}..."
-            cargo install difftastic --version ${{ inputs.difftastic-version }}
+            VERSION="${{ inputs.difftastic-version }}"
           else
-            echo "Installing latest difftastic..."
-            cargo install difftastic
+            echo "Fetching latest version..."
+            VERSION=$(curl -s https://api.github.com/repos/Wilfred/difftastic/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
           fi
-          echo "DIFFT_CMD=difft" >> $GITHUB_ENV
+
+          echo "Downloading difftastic version $VERSION..."
+
+          # Download prebuilt binary for Linux x86_64
+          DOWNLOAD_URL="https://github.com/Wilfred/difftastic/releases/download/${VERSION}/difft-x86_64-unknown-linux-gnu.tar.gz"
+
+          curl -L -o difft.tar.gz "$DOWNLOAD_URL"
+          tar -xzf difft.tar.gz
+          chmod +x difft
+
+          # Move to a location in PATH
+          sudo mv difft /usr/local/bin/
+
+          echo "Difftastic version $VERSION installed successfully"
+          difft --version
+
+      - name: Install image generation tools
+        run: |
+          # Install ImageMagick for image manipulation
+          sudo apt-get update
+          sudo apt-get install -y imagemagick fonts-dejavu-core
+
+          # Install ansi2html for better terminal rendering
+          pip install ansi2html
 
       - name: Get list of changed files
         id: changed-files
@@ -70,16 +77,17 @@ jobs:
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
 
-          # Get list of changed files
-          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > all_changed_files.txt
+          # Get list of modified files only (exclude new/deleted files)
+          # M = modified, only include these
+          git diff --name-status "$BASE_SHA" "$HEAD_SHA" | grep "^M" | cut -f2 > all_changed_files.txt || touch all_changed_files.txt
 
           # Apply file patterns if specified
           if [ -n "${{ inputs.file-patterns }}" ]; then
             echo "Filtering files with patterns: ${{ inputs.file-patterns }}"
-            > changed_files.txt
-            for pattern in ${{ inputs.file-patterns }}; do
-              grep -E "$pattern" all_changed_files.txt >> changed_files.txt || true
-            done
+            # Combine patterns with OR for single grep pass
+            PATTERN="${{ inputs.file-patterns }}"
+            COMBINED_PATTERN=$(echo "$PATTERN" | sed 's/ /|/g')
+            grep -E "$COMBINED_PATTERN" all_changed_files.txt > changed_files.txt || touch changed_files.txt
           else
             cp all_changed_files.txt changed_files.txt
           fi
@@ -87,10 +95,11 @@ jobs:
           # Apply exclude patterns if specified
           if [ -n "${{ inputs.exclude-patterns }}" ]; then
             echo "Excluding files with patterns: ${{ inputs.exclude-patterns }}"
-            for pattern in ${{ inputs.exclude-patterns }}; do
-              grep -vE "$pattern" changed_files.txt > temp_files.txt || true
-              mv temp_files.txt changed_files.txt
-            done
+            # Combine exclude patterns with OR for single grep pass
+            EXCLUDE_PATTERN="${{ inputs.exclude-patterns }}"
+            COMBINED_EXCLUDE=$(echo "$EXCLUDE_PATTERN" | sed 's/ /|/g')
+            grep -vE "$COMBINED_EXCLUDE" changed_files.txt > temp_files.txt || touch temp_files.txt
+            mv temp_files.txt changed_files.txt
           fi
 
           echo "Changed files to process:"
@@ -262,6 +271,8 @@ jobs:
           # Process each changed file
           HAS_DIFFS=false
           DIFF_COUNT=0
+          mkdir -p diff_output/images
+
           while IFS= read -r file; do
             if [ -z "$file" ]; then
               continue
@@ -269,19 +280,9 @@ jobs:
 
             echo "Processing: $file"
 
-            # Check if file exists in base
-            BASE_FILE=$(git show "$BASE_SHA:$file" 2>/dev/null || echo "")
-            HEAD_FILE=$(git show "$HEAD_SHA:$file" 2>/dev/null || echo "")
-
-            if [ -z "$BASE_FILE" ]; then
-              echo "  → New file, skipping diff"
-              continue
-            fi
-
-            if [ -z "$HEAD_FILE" ]; then
-              echo "  → Deleted file, skipping diff"
-              continue
-            fi
+            # Get file contents from both commits
+            BASE_FILE=$(git show "$BASE_SHA:$file" 2>/dev/null)
+            HEAD_FILE=$(git show "$HEAD_SHA:$file" 2>/dev/null)
 
             # Create temp files for diff
             BASE_TEMP=$(mktemp)
@@ -290,9 +291,8 @@ jobs:
             echo "$BASE_FILE" > "$BASE_TEMP"
             echo "$HEAD_FILE" > "$HEAD_TEMP"
 
-            # Run difftastic with error handling
-            DIFF_OUTPUT=$($DIFFT_CMD --color=always --display=side-by-side "$BASE_TEMP" "$HEAD_TEMP" 2>&1 || true)
-            DIFF_OUTPUT_NO_COLOR=$($DIFFT_CMD --display=side-by-side "$BASE_TEMP" "$HEAD_TEMP" 2>&1 || true)
+            # Run difftastic once with color
+            DIFF_OUTPUT=$(difft --color=always --display=side-by-side "$BASE_TEMP" "$HEAD_TEMP" 2>&1 || true)
 
             rm "$BASE_TEMP" "$HEAD_TEMP"
 
@@ -301,8 +301,22 @@ jobs:
               HAS_DIFFS=true
               DIFF_COUNT=$((DIFF_COUNT + 1))
 
+              # Strip ANSI color codes for plain text version
+              DIFF_OUTPUT_NO_COLOR=$(echo "$DIFF_OUTPUT" | sed 's/\x1B\[[0-9;]*[JKmsu]//g')
+
               # Escape for HTML
               ESCAPED_DIFF=$(echo "$DIFF_OUTPUT" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+
+              # Generate image for this diff
+              SAFE_FILENAME=$(echo "$file" | sed 's/[\/\.]/_/g')
+              IMAGE_FILE="diff_output/images/${SAFE_FILENAME}.png"
+
+              # Convert ANSI colored output to HTML, then to image
+              echo "$DIFF_OUTPUT" | ansi2html --inline > "diff_output/images/${SAFE_FILENAME}.html"
+
+              # Use wkhtmltoimage or convert HTML to image with headless browser
+              # For simplicity, we'll store the HTML and convert them all at the end
+              echo "$IMAGE_FILE" >> diff_output/image_list.txt
 
               # Add to HTML
               cat >> "$HTML_FILE" << HTMLPART
@@ -382,12 +396,180 @@ jobs:
 
           echo "Diff generation complete! Generated diffs for $DIFF_COUNT files."
 
-      - name: Upload HTML diff viewer
+      - name: Install playwright for HTML to image conversion
+        if: hashFiles('diff_output/image_list.txt') != ''
+        run: |
+          npm install -g playwright
+          playwright install chromium
+
+      - name: Convert diff HTML to images
+        if: hashFiles('diff_output/image_list.txt') != ''
+        run: |
+          # Create a Node.js script to convert HTML to images
+          cat > convert_to_images.js << 'JSEOF'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+          const path = require('path');
+
+          (async () => {
+            const browser = await chromium.launch();
+            const page = await browser.newPage();
+
+            // Get all HTML files in images directory
+            const imagesDir = 'diff_output/images';
+            const files = fs.readdirSync(imagesDir).filter(f => f.endsWith('.html'));
+
+            for (const file of files) {
+              const htmlPath = path.join(imagesDir, file);
+              const pngPath = htmlPath.replace('.html', '.png');
+
+              await page.goto(`file://${process.cwd()}/${htmlPath}`);
+              await page.screenshot({
+                path: pngPath,
+                fullPage: true,
+                type: 'png'
+              });
+
+              console.log(`Generated ${pngPath}`);
+            }
+
+            // Create a combined image with all diffs
+            const combinedHtml = `
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <style>
+                body {
+                  font-family: monospace;
+                  background: #0d1117;
+                  color: #c9d1d9;
+                  padding: 20px;
+                  margin: 0;
+                }
+                .file-section {
+                  margin-bottom: 40px;
+                  border: 1px solid #30363d;
+                  border-radius: 6px;
+                  overflow: hidden;
+                }
+                .file-header {
+                  background: #161b22;
+                  padding: 10px 15px;
+                  font-weight: bold;
+                  border-bottom: 1px solid #30363d;
+                }
+                .file-content {
+                  padding: 15px;
+                }
+              </style>
+            </head>
+            <body>
+              <h1>Semantic Diff - All Files</h1>
+              ${files.map(file => {
+                const content = fs.readFileSync(path.join(imagesDir, file), 'utf8');
+                const filename = file.replace('.html', '').replace(/_/g, '/');
+                return `
+                  <div class="file-section">
+                    <div class="file-header">${filename}</div>
+                    <div class="file-content">${content}</div>
+                  </div>
+                `;
+              }).join('\n')}
+            </body>
+            </html>
+            `;
+
+            fs.writeFileSync('diff_output/images/combined.html', combinedHtml);
+            await page.goto(`file://${process.cwd()}/diff_output/images/combined.html`);
+            await page.screenshot({
+              path: 'diff_output/images/combined_diff.png',
+              fullPage: true,
+              type: 'png'
+            });
+
+            await browser.close();
+            console.log('All images generated successfully!');
+          })();
+          JSEOF
+
+          node convert_to_images.js
+
+      - name: Upload diff images as artifact
+        if: hashFiles('diff_output/image_list.txt') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: semantic-diff-viewer
+          name: semantic-diff-images-pr-${{ github.event.pull_request.number }}
+          path: diff_output/images/
+          retention-days: 30
+
+      - name: Upload HTML diff viewer as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-diff-viewer-pr-${{ github.event.pull_request.number }}
           path: diff_output/diff_viewer.html
           retention-days: 30
+
+      - name: Upload combined diff image to GitHub
+        if: hashFiles('diff_output/images/combined_diff.png') != ''
+        id: upload-image
+        run: |
+          # Upload image as a comment attachment using GitHub API
+          IMAGE_URL=$(curl -X POST \
+            -H "Authorization: token ${{ github.token }}" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @diff_output/images/combined_diff.png \
+            "https://uploads.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/assets?name=combined_diff.png" | jq -r '.url')
+
+          echo "image_url=$IMAGE_URL" >> $GITHUB_OUTPUT
+          echo "Uploaded image: $IMAGE_URL"
+
+      - name: Generate PR comment body
+        run: |
+          cat > diff_output/pr_comment.md << 'COMMENTEOF'
+          ## 🔍 Semantic Diff Summary
+
+          <details>
+          <summary>📊 View Semantic Diffs (Click to expand)</summary>
+
+          COMMENTEOF
+
+          # Append the diff summary content (skip first 3 lines which are headers)
+          tail -n +4 diff_output/diff_summary.md >> diff_output/pr_comment.md
+
+          cat >> diff_output/pr_comment.md << 'COMMENTEOF'
+
+          </details>
+          COMMENTEOF
+
+          # Add image section if image was generated
+          if [ -f "diff_output/images/combined_diff.png" ]; then
+            cat >> diff_output/pr_comment.md << IMAGEEOF
+
+          <details>
+          <summary>🖼️ View Diff as Image (Click to expand)</summary>
+
+          ![Semantic Diff](${{ steps.upload-image.outputs.image_url }})
+
+          </details>
+          IMAGEEOF
+          fi
+
+          cat >> diff_output/pr_comment.md << COMMENTEOF
+
+          ---
+
+          ### 📄 Interactive HTML Viewer
+
+          **[View workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**
+
+          To view the full interactive HTML diff viewer:
+          1. Click the link above to go to the workflow run
+          2. Scroll down to "Artifacts"
+          3. Download \`semantic-diff-viewer-pr-${{ github.event.pull_request.number }}\`
+          4. Extract and open \`diff_viewer.html\` in your browser
+
+          <sub>Generated by [difftastic](https://github.com/Wilfred/difftastic) • Last updated: \`${{ github.event.pull_request.head.sha }}\`</sub>
+          COMMENTEOF
 
       - name: Find existing comment
         uses: peter-evans/find-comment@v3
@@ -397,35 +579,10 @@ jobs:
           comment-author: 'github-actions[bot]'
           body-includes: 'Semantic Diff Summary'
 
-      - name: Read diff summary
-        id: read-summary
-        run: |
-          SUMMARY=$(cat diff_output/diff_summary.md | tail -n +4)
-          # Use a delimiter to handle multiline output
-          echo "summary<<EOF" >> $GITHUB_OUTPUT
-          echo "$SUMMARY" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
       - name: Create or update PR comment
         uses: peter-evans/create-or-update-comment@v4
         with:
           comment-id: ${{ steps.find-comment.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
           edit-mode: replace
-          body: |
-            ## 🔍 Semantic Diff Summary
-
-            <details>
-            <summary>📊 View Semantic Diffs (Click to expand)</summary>
-
-            ${{ steps.read-summary.outputs.summary }}
-
-            </details>
-
-            ---
-
-            📄 **[View Full HTML Diff Viewer](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**
-
-            Download the `semantic-diff-viewer` artifact from the Actions run above to view the full interactive HTML diff viewer locally.
-
-            <sub>Generated by [difftastic](https://github.com/Wilfred/difftastic) • Last updated: ${{ github.event.pull_request.head.sha }}</sub>
+          body-path: diff_output/pr_comment.md
