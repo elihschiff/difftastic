@@ -6,25 +6,29 @@ This repository provides GitHub Actions workflows that automatically generate se
 
 ### Available Workflows
 
-#### 1. `pr-semantic-diff.yml` - Standalone Workflow
+#### `reusable-semantic-diff.yml` - Universal Reusable Workflow
 
-This workflow is designed to run directly in the difftastic repository. It will:
-- Build difftastic from source (since it's available locally)
+This is a reusable workflow that works in any repository, including this one. It installs difftastic from crates.io and generates semantic diffs.
+
+Features:
+- Install difftastic from crates.io (configurable version)
 - Generate semantic diffs for all changed files in a PR
 - Post a comment on the PR with collapsible diff sections
 - Upload an interactive HTML diff viewer as an artifact
 
-**Usage in this repository:**
+#### `pr-semantic-diff.yml` - Local Workflow Caller
 
-The workflow automatically runs when PRs are opened, synchronized, or reopened. No additional setup required!
+This workflow is used in the difftastic repository itself and simply calls the reusable workflow above.
 
-#### 2. `reusable-semantic-diff.yml` - Reusable Workflow
+### Usage
 
-This is a reusable workflow that can be called from other repositories. It installs difftastic from crates.io and generates semantic diffs.
+**In this repository:**
 
-**Usage in other repositories:**
+The workflow runs automatically on all PRs. No setup needed!
 
-1. Create a workflow file in your repository (e.g., `.github/workflows/semantic-diff.yml`):
+**In other repositories:**
+
+Create a workflow file in your repository (e.g., `.github/workflows/semantic-diff.yml`):
 
 ```yaml
 name: Semantic Diff
@@ -42,7 +46,7 @@ jobs:
     uses: Wilfred/difftastic/.github/workflows/reusable-semantic-diff.yml@master
 ```
 
-2. **With custom options:**
+**With custom options:**
 
 ```yaml
 name: Semantic Diff
