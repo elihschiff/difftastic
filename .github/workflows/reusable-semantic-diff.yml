@@ -367,13 +367,14 @@ jobs:
               ESCAPED_DIFF=$(echo "$DIFF_OUTPUT" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
 
               # Save diff output for later image generation
-              SAFE_FILENAME=$(echo "$file" | sed 's/[\/\.]/_/g')
+              # Use HEAD_FILE_PATH for filename (without status prefix)
+              SAFE_FILENAME=$(echo "$HEAD_FILE_PATH" | sed 's/[\/\.:@]/_/g')
 
               # Store the colored diff output for image generation later
               echo "$DIFF_OUTPUT" > "diff_output/images/${SAFE_FILENAME}.ansi"
 
               # Track this file for image generation
-              echo "${SAFE_FILENAME}:${DISPLAY_NAME}" >> diff_output/image_list.txt
+              echo "${SAFE_FILENAME}|${DISPLAY_NAME}" >> diff_output/image_list.txt
 
               # Add to HTML
               cat >> "$HTML_FILE" << HTMLPART
@@ -389,37 +390,13 @@ jobs:
           HTMLPART
 
               # Add to markdown (collapsed by default)
-              # Detect language from file extension for syntax highlighting
-              FILE_EXT="${HEAD_FILE_PATH##*.}"
-              LANG_TAG=""
-              case "$FILE_EXT" in
-                rs) LANG_TAG="rust" ;;
-                py) LANG_TAG="python" ;;
-                js|jsx) LANG_TAG="javascript" ;;
-                ts|tsx) LANG_TAG="typescript" ;;
-                java) LANG_TAG="java" ;;
-                c|h) LANG_TAG="c" ;;
-                cpp|cc|cxx|hpp) LANG_TAG="cpp" ;;
-                go) LANG_TAG="go" ;;
-                rb) LANG_TAG="ruby" ;;
-                php) LANG_TAG="php" ;;
-                sh|bash) LANG_TAG="bash" ;;
-                yml|yaml) LANG_TAG="yaml" ;;
-                json) LANG_TAG="json" ;;
-                xml) LANG_TAG="xml" ;;
-                html) LANG_TAG="html" ;;
-                css) LANG_TAG="css" ;;
-                md|markdown) LANG_TAG="markdown" ;;
-                sql) LANG_TAG="sql" ;;
-                *) LANG_TAG="diff" ;;  # Default to diff syntax
-              esac
-
+              # Use <pre> tag to preserve difftastic's formatting better than code blocks
               echo "<details>" >> "$MARKDOWN_FILE"
               echo "<summary><code>$DISPLAY_NAME</code></summary>" >> "$MARKDOWN_FILE"
               echo "" >> "$MARKDOWN_FILE"
-              echo "\`\`\`$LANG_TAG" >> "$MARKDOWN_FILE"
+              echo "<pre>" >> "$MARKDOWN_FILE"
               echo "$DIFF_OUTPUT_NO_COLOR" >> "$MARKDOWN_FILE"
-              echo '```' >> "$MARKDOWN_FILE"
+              echo "</pre>" >> "$MARKDOWN_FILE"
               echo "" >> "$MARKDOWN_FILE"
               echo "</details>" >> "$MARKDOWN_FILE"
               echo "" >> "$MARKDOWN_FILE"
