@@ -1,0 +1,431 @@
+name: Reusable Semantic Diff
+
+on:
+  workflow_call:
+    inputs:
+      difftastic-version:
+        description: 'Version of difftastic to install (e.g., 0.66.0). Leave empty to use latest.'
+        required: false
+        type: string
+        default: ''
+      file-patterns:
+        description: 'File patterns to include in diff (space-separated). Leave empty for all files.'
+        required: false
+        type: string
+        default: ''
+      exclude-patterns:
+        description: 'File patterns to exclude from diff (space-separated).'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  semantic-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fetch base branch
+        run: |
+          git fetch origin ${{ github.event.pull_request.base.ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-difftastic-${{ inputs.difftastic-version }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-difftastic-
+
+      - name: Install difftastic
+        run: |
+          if [ -n "${{ inputs.difftastic-version }}" ]; then
+            echo "Installing difftastic version ${{ inputs.difftastic-version }}..."
+            cargo install difftastic --version ${{ inputs.difftastic-version }}
+          else
+            echo "Installing latest difftastic..."
+            cargo install difftastic
+          fi
+          echo "DIFFT_CMD=difft" >> $GITHUB_ENV
+
+      - name: Get list of changed files
+        id: changed-files
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          # Get list of changed files
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > all_changed_files.txt
+
+          # Apply file patterns if specified
+          if [ -n "${{ inputs.file-patterns }}" ]; then
+            echo "Filtering files with patterns: ${{ inputs.file-patterns }}"
+            > changed_files.txt
+            for pattern in ${{ inputs.file-patterns }}; do
+              grep -E "$pattern" all_changed_files.txt >> changed_files.txt || true
+            done
+          else
+            cp all_changed_files.txt changed_files.txt
+          fi
+
+          # Apply exclude patterns if specified
+          if [ -n "${{ inputs.exclude-patterns }}" ]; then
+            echo "Excluding files with patterns: ${{ inputs.exclude-patterns }}"
+            for pattern in ${{ inputs.exclude-patterns }}; do
+              grep -vE "$pattern" changed_files.txt > temp_files.txt || true
+              mv temp_files.txt changed_files.txt
+            done
+          fi
+
+          echo "Changed files to process:"
+          cat changed_files.txt
+
+          # Count changed files
+          FILE_COUNT=$(wc -l < changed_files.txt | tr -d ' ')
+          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Generate semantic diffs
+        id: generate-diffs
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          mkdir -p diff_output
+
+          # Create markdown output file
+          MARKDOWN_FILE="diff_output/diff_summary.md"
+          echo "# Semantic Diff Summary" > "$MARKDOWN_FILE"
+          echo "" >> "$MARKDOWN_FILE"
+          echo "Comparing \`$BASE_SHA\` → \`$HEAD_SHA\`" >> "$MARKDOWN_FILE"
+          echo "" >> "$MARKDOWN_FILE"
+
+          # Create HTML output file
+          HTML_FILE="diff_output/diff_viewer.html"
+          cat > "$HTML_FILE" << 'HTMLEOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Semantic Diff Viewer</title>
+              <style>
+                  * {
+                      margin: 0;
+                      padding: 0;
+                      box-sizing: border-box;
+                  }
+                  body {
+                      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                      background: #0d1117;
+                      color: #c9d1d9;
+                      padding: 20px;
+                      line-height: 1.6;
+                  }
+                  .container {
+                      max-width: 1400px;
+                      margin: 0 auto;
+                  }
+                  h1 {
+                      color: #58a6ff;
+                      margin-bottom: 30px;
+                      padding-bottom: 10px;
+                      border-bottom: 1px solid #21262d;
+                  }
+                  .info {
+                      background: #161b22;
+                      padding: 15px;
+                      border-radius: 6px;
+                      margin-bottom: 30px;
+                      border: 1px solid #21262d;
+                  }
+                  .file-diff {
+                      background: #161b22;
+                      border: 1px solid #21262d;
+                      border-radius: 6px;
+                      margin-bottom: 20px;
+                      overflow: hidden;
+                  }
+                  .file-header {
+                      background: #21262d;
+                      padding: 12px 16px;
+                      font-weight: 600;
+                      font-family: 'Consolas', 'Monaco', monospace;
+                      font-size: 14px;
+                      cursor: pointer;
+                      user-select: none;
+                      display: flex;
+                      justify-content: space-between;
+                      align-items: center;
+                  }
+                  .file-header:hover {
+                      background: #2d333b;
+                  }
+                  .file-header .toggle {
+                      color: #8b949e;
+                      font-size: 12px;
+                  }
+                  .file-content {
+                      padding: 16px;
+                      display: none;
+                  }
+                  .file-content.expanded {
+                      display: block;
+                  }
+                  pre {
+                      background: #0d1117;
+                      padding: 16px;
+                      border-radius: 6px;
+                      overflow-x: auto;
+                      font-family: 'Consolas', 'Monaco', monospace;
+                      font-size: 13px;
+                      line-height: 1.5;
+                      white-space: pre-wrap;
+                      word-wrap: break-word;
+                  }
+                  .no-changes {
+                      color: #8b949e;
+                      font-style: italic;
+                      padding: 20px;
+                      text-align: center;
+                  }
+                  .button-group {
+                      margin-bottom: 20px;
+                  }
+                  .expand-all {
+                      background: #238636;
+                      color: white;
+                      border: none;
+                      padding: 8px 16px;
+                      border-radius: 6px;
+                      cursor: pointer;
+                      font-size: 14px;
+                  }
+                  .expand-all:hover {
+                      background: #2ea043;
+                  }
+                  .collapse-all {
+                      background: #da3633;
+                      color: white;
+                      border: none;
+                      padding: 8px 16px;
+                      border-radius: 6px;
+                      cursor: pointer;
+                      margin-left: 10px;
+                      font-size: 14px;
+                  }
+                  .collapse-all:hover {
+                      background: #f85149;
+                  }
+                  .stats {
+                      background: #161b22;
+                      padding: 10px 15px;
+                      border-radius: 6px;
+                      margin-bottom: 20px;
+                      border: 1px solid #21262d;
+                      font-size: 14px;
+                  }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🔍 Semantic Diff Viewer</h1>
+                  <div class="info">
+                      <p><strong>Repository:</strong> ${{ github.repository }}</p>
+                      <p><strong>Pull Request:</strong> #${{ github.event.pull_request.number }}</p>
+                      <p><strong>Base:</strong> <code>${{ github.event.pull_request.base.sha }}</code></p>
+                      <p><strong>Head:</strong> <code>${{ github.event.pull_request.head.sha }}</code></p>
+                  </div>
+                  <div class="button-group">
+                      <button class="expand-all" onclick="expandAll()">Expand All</button>
+                      <button class="collapse-all" onclick="collapseAll()">Collapse All</button>
+                  </div>
+                  <div class="stats" id="stats"></div>
+                  <div id="diffs">
+          HTMLEOF
+
+          # Process each changed file
+          HAS_DIFFS=false
+          DIFF_COUNT=0
+          while IFS= read -r file; do
+            if [ -z "$file" ]; then
+              continue
+            fi
+
+            echo "Processing: $file"
+
+            # Check if file exists in base
+            BASE_FILE=$(git show "$BASE_SHA:$file" 2>/dev/null || echo "")
+            HEAD_FILE=$(git show "$HEAD_SHA:$file" 2>/dev/null || echo "")
+
+            if [ -z "$BASE_FILE" ]; then
+              echo "  → New file, skipping diff"
+              continue
+            fi
+
+            if [ -z "$HEAD_FILE" ]; then
+              echo "  → Deleted file, skipping diff"
+              continue
+            fi
+
+            # Create temp files for diff
+            BASE_TEMP=$(mktemp)
+            HEAD_TEMP=$(mktemp)
+
+            echo "$BASE_FILE" > "$BASE_TEMP"
+            echo "$HEAD_FILE" > "$HEAD_TEMP"
+
+            # Run difftastic with error handling
+            DIFF_OUTPUT=$($DIFFT_CMD --color=always --display=side-by-side "$BASE_TEMP" "$HEAD_TEMP" 2>&1 || true)
+            DIFF_OUTPUT_NO_COLOR=$($DIFFT_CMD --display=side-by-side "$BASE_TEMP" "$HEAD_TEMP" 2>&1 || true)
+
+            rm "$BASE_TEMP" "$HEAD_TEMP"
+
+            # Check if there are actual changes (difftastic outputs something even for identical files)
+            if [ -n "$DIFF_OUTPUT" ] && ! echo "$DIFF_OUTPUT" | grep -q "^No changes"; then
+              HAS_DIFFS=true
+              DIFF_COUNT=$((DIFF_COUNT + 1))
+
+              # Escape for HTML
+              ESCAPED_DIFF=$(echo "$DIFF_OUTPUT" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+
+              # Add to HTML
+              cat >> "$HTML_FILE" << HTMLPART
+                      <div class="file-diff">
+                          <div class="file-header" onclick="toggleDiff(this)">
+                              <span>$file</span>
+                              <span class="toggle">▶ Click to expand</span>
+                          </div>
+                          <div class="file-content">
+                              <pre>$ESCAPED_DIFF</pre>
+                          </div>
+                      </div>
+          HTMLPART
+
+              # Add to markdown (collapsed by default)
+              echo "<details>" >> "$MARKDOWN_FILE"
+              echo "<summary><code>$file</code></summary>" >> "$MARKDOWN_FILE"
+              echo "" >> "$MARKDOWN_FILE"
+              echo '```' >> "$MARKDOWN_FILE"
+              echo "$DIFF_OUTPUT_NO_COLOR" >> "$MARKDOWN_FILE"
+              echo '```' >> "$MARKDOWN_FILE"
+              echo "" >> "$MARKDOWN_FILE"
+              echo "</details>" >> "$MARKDOWN_FILE"
+              echo "" >> "$MARKDOWN_FILE"
+            else
+              echo "  → No changes detected"
+            fi
+          done < changed_files.txt
+
+          if [ "$HAS_DIFFS" = false ]; then
+            echo "<div class='no-changes'>No semantic changes detected in modified files.</div>" >> "$HTML_FILE"
+            echo "" >> "$MARKDOWN_FILE"
+            echo "_No semantic changes detected in modified files._" >> "$MARKDOWN_FILE"
+          fi
+
+          # Complete HTML file
+          cat >> "$HTML_FILE" << HTMLEOF
+                  </div>
+              </div>
+              <script>
+                  const diffCount = $DIFF_COUNT;
+                  document.getElementById('stats').innerHTML = '<strong>Files with changes:</strong> ' + diffCount;
+
+                  function toggleDiff(header) {
+                      const content = header.nextElementSibling;
+                      const toggle = header.querySelector('.toggle');
+                      if (content.classList.contains('expanded')) {
+                          content.classList.remove('expanded');
+                          toggle.textContent = '▶ Click to expand';
+                      } else {
+                          content.classList.add('expanded');
+                          toggle.textContent = '▼ Click to collapse';
+                      }
+                  }
+
+                  function expandAll() {
+                      document.querySelectorAll('.file-content').forEach(content => {
+                          content.classList.add('expanded');
+                      });
+                      document.querySelectorAll('.toggle').forEach(toggle => {
+                          toggle.textContent = '▼ Click to collapse';
+                      });
+                  }
+
+                  function collapseAll() {
+                      document.querySelectorAll('.file-content').forEach(content => {
+                          content.classList.remove('expanded');
+                      });
+                      document.querySelectorAll('.toggle').forEach(toggle => {
+                          toggle.textContent = '▶ Click to expand';
+                      });
+                  }
+              </script>
+          </body>
+          </html>
+          HTMLEOF
+
+          echo "Diff generation complete! Generated diffs for $DIFF_COUNT files."
+
+      - name: Upload HTML diff viewer
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-diff-viewer
+          path: diff_output/diff_viewer.html
+          retention-days: 30
+
+      - name: Find existing comment
+        uses: peter-evans/find-comment@v3
+        id: find-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: 'Semantic Diff Summary'
+
+      - name: Read diff summary
+        id: read-summary
+        run: |
+          SUMMARY=$(cat diff_output/diff_summary.md | tail -n +4)
+          # Use a delimiter to handle multiline output
+          echo "summary<<EOF" >> $GITHUB_OUTPUT
+          echo "$SUMMARY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create or update PR comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          edit-mode: replace
+          body: |
+            ## 🔍 Semantic Diff Summary
+
+            <details>
+            <summary>📊 View Semantic Diffs (Click to expand)</summary>
+
+            ${{ steps.read-summary.outputs.summary }}
+
+            </details>
+
+            ---
+
+            📄 **[View Full HTML Diff Viewer](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**
+
+            Download the `semantic-diff-viewer` artifact from the Actions run above to view the full interactive HTML diff viewer locally.
+
+            <sub>Generated by [difftastic](https://github.com/Wilfred/difftastic) • Last updated: ${{ github.event.pull_request.head.sha }}</sub>
