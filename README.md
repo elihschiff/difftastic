@@ -38,6 +38,14 @@ actually changed.
 instructions](http://difftastic.wilfred.me.uk/git.html)), as well as
 many other version control systems.
 
+## GitHub Actions Integration
+
+You can automatically generate semantic diffs on pull requests using
+the included GitHub Action workflow. The workflow posts a comment with
+text diffs and rendered images showing the structural changes.
+
+See `.github/workflows/pr-semantic-diff.yml` for the implementation.
+
 ## Languages Supported
 
 Difftastic supports over 30 programming languages, see [the
