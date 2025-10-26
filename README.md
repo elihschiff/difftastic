@@ -14,7 +14,7 @@ their syntax.
 [Installation](https://difftastic.wilfred.me.uk/installation.html) in
 [the manual](http://difftastic.wilfred.me.uk/).**
 
-## Examples
+## Examples (random change)
 
 ![Screenshot of difftastic and Rust](img/wrap_expr.png)
 
