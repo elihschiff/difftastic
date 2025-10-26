@@ -389,10 +389,35 @@ jobs:
           HTMLPART
 
               # Add to markdown (collapsed by default)
+              # Detect language from file extension for syntax highlighting
+              FILE_EXT="${HEAD_FILE_PATH##*.}"
+              LANG_TAG=""
+              case "$FILE_EXT" in
+                rs) LANG_TAG="rust" ;;
+                py) LANG_TAG="python" ;;
+                js|jsx) LANG_TAG="javascript" ;;
+                ts|tsx) LANG_TAG="typescript" ;;
+                java) LANG_TAG="java" ;;
+                c|h) LANG_TAG="c" ;;
+                cpp|cc|cxx|hpp) LANG_TAG="cpp" ;;
+                go) LANG_TAG="go" ;;
+                rb) LANG_TAG="ruby" ;;
+                php) LANG_TAG="php" ;;
+                sh|bash) LANG_TAG="bash" ;;
+                yml|yaml) LANG_TAG="yaml" ;;
+                json) LANG_TAG="json" ;;
+                xml) LANG_TAG="xml" ;;
+                html) LANG_TAG="html" ;;
+                css) LANG_TAG="css" ;;
+                md|markdown) LANG_TAG="markdown" ;;
+                sql) LANG_TAG="sql" ;;
+                *) LANG_TAG="diff" ;;  # Default to diff syntax
+              esac
+
               echo "<details>" >> "$MARKDOWN_FILE"
               echo "<summary><code>$DISPLAY_NAME</code></summary>" >> "$MARKDOWN_FILE"
               echo "" >> "$MARKDOWN_FILE"
-              echo '```' >> "$MARKDOWN_FILE"
+              echo "\`\`\`$LANG_TAG" >> "$MARKDOWN_FILE"
               echo "$DIFF_OUTPUT_NO_COLOR" >> "$MARKDOWN_FILE"
               echo '```' >> "$MARKDOWN_FILE"
               echo "" >> "$MARKDOWN_FILE"
