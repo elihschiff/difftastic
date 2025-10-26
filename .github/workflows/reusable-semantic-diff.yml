@@ -77,9 +77,31 @@ jobs:
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
 
-          # Get list of modified files only (exclude new/deleted files)
-          # M = modified, only include these
-          git diff --name-status "$BASE_SHA" "$HEAD_SHA" | grep "^M" | cut -f2 > all_changed_files.txt || touch all_changed_files.txt
+          # Get list of changed files that can be diffed
+          # For M (modified): compare old vs new
+          # For R (renamed): compare old name vs new name
+          # For C (copied): compare source vs copy
+          # Skip A (added) and D (deleted) - no base/head counterpart to diff
+
+          > all_changed_files.txt
+
+          git diff --name-status "$BASE_SHA" "$HEAD_SHA" | while IFS=$'\t' read -r status file1 file2; do
+            case "$status" in
+              M*)
+                # Modified: file1 is the filename
+                echo "$file1" >> all_changed_files.txt
+                ;;
+              R*)
+                # Renamed: file1 is old name, file2 is new name
+                # We'll diff the old name in base against new name in head
+                echo "$file1:$file2" >> all_changed_files.txt
+                ;;
+              C*)
+                # Copied: file1 is source, file2 is copy
+                echo "$file1:$file2" >> all_changed_files.txt
+                ;;
+            esac
+          done
 
           # Apply file patterns if specified
           if [ -n "${{ inputs.file-patterns }}" ]; then
@@ -278,11 +300,22 @@ jobs:
               continue
             fi
 
-            echo "Processing: $file"
+            # Handle renamed/copied files (format: oldname:newname)
+            if [[ "$file" == *":"* ]]; then
+              BASE_FILE_PATH="${file%:*}"
+              HEAD_FILE_PATH="${file#*:}"
+              DISPLAY_NAME="$HEAD_FILE_PATH (renamed from $BASE_FILE_PATH)"
+            else
+              BASE_FILE_PATH="$file"
+              HEAD_FILE_PATH="$file"
+              DISPLAY_NAME="$file"
+            fi
+
+            echo "Processing: $DISPLAY_NAME"
 
             # Get file contents from both commits
-            BASE_FILE=$(git show "$BASE_SHA:$file" 2>/dev/null)
-            HEAD_FILE=$(git show "$HEAD_SHA:$file" 2>/dev/null)
+            BASE_FILE=$(git show "$BASE_SHA:$BASE_FILE_PATH" 2>/dev/null)
+            HEAD_FILE=$(git show "$HEAD_SHA:$HEAD_FILE_PATH" 2>/dev/null)
 
             # Create temp files for diff
             BASE_TEMP=$(mktemp)
@@ -322,7 +355,7 @@ jobs:
               cat >> "$HTML_FILE" << HTMLPART
                       <div class="file-diff">
                           <div class="file-header" onclick="toggleDiff(this)">
-                              <span>$file</span>
+                              <span>$DISPLAY_NAME</span>
                               <span class="toggle">▶ Click to expand</span>
                           </div>
                           <div class="file-content">
@@ -333,7 +366,7 @@ jobs:
 
               # Add to markdown (collapsed by default)
               echo "<details>" >> "$MARKDOWN_FILE"
-              echo "<summary><code>$file</code></summary>" >> "$MARKDOWN_FILE"
+              echo "<summary><code>$DISPLAY_NAME</code></summary>" >> "$MARKDOWN_FILE"
               echo "" >> "$MARKDOWN_FILE"
               echo '```' >> "$MARKDOWN_FILE"
               echo "$DIFF_OUTPUT_NO_COLOR" >> "$MARKDOWN_FILE"
