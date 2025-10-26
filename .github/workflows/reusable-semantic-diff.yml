@@ -83,9 +83,10 @@ jobs:
 
           # Get list of changed files that can be diffed
           # For M (modified): compare old vs new
+          # For A (added): compare empty vs new (show what was added)
           # For R (renamed): compare old name vs new name
           # For C (copied): compare source vs copy
-          # Skip A (added) and D (deleted) - no base/head counterpart to diff
+          # Skip D (deleted) - no head counterpart to diff
 
           > all_changed_files.txt
 
@@ -93,16 +94,21 @@ jobs:
             case "$status" in
               M*)
                 # Modified: file1 is the filename
-                echo "$file1" >> all_changed_files.txt
+                echo "M:$file1" >> all_changed_files.txt
+                ;;
+              A*)
+                # Added: file1 is the new filename
+                # We'll diff empty vs new file content
+                echo "A:$file1" >> all_changed_files.txt
                 ;;
               R*)
                 # Renamed: file1 is old name, file2 is new name
                 # We'll diff the old name in base against new name in head
-                echo "$file1:$file2" >> all_changed_files.txt
+                echo "R:$file1:$file2" >> all_changed_files.txt
                 ;;
               C*)
                 # Copied: file1 is source, file2 is copy
-                echo "$file1:$file2" >> all_changed_files.txt
+                echo "C:$file1:$file2" >> all_changed_files.txt
                 ;;
             esac
           done
@@ -304,21 +310,46 @@ jobs:
               continue
             fi
 
-            # Handle renamed/copied files (format: oldname:newname)
-            if [[ "$file" == *":"* ]]; then
-              BASE_FILE_PATH="${file%:*}"
-              HEAD_FILE_PATH="${file#*:}"
-              DISPLAY_NAME="$HEAD_FILE_PATH (renamed from $BASE_FILE_PATH)"
-            else
-              BASE_FILE_PATH="$file"
-              HEAD_FILE_PATH="$file"
-              DISPLAY_NAME="$file"
-            fi
+            # Parse the status and file paths
+            STATUS="${file%%:*}"
+            REST="${file#*:}"
+
+            case "$STATUS" in
+              M)
+                # Modified file
+                BASE_FILE_PATH="$REST"
+                HEAD_FILE_PATH="$REST"
+                DISPLAY_NAME="$REST"
+                ;;
+              A)
+                # Added file - compare against empty
+                BASE_FILE_PATH=""
+                HEAD_FILE_PATH="$REST"
+                DISPLAY_NAME="$REST (new file)"
+                ;;
+              R)
+                # Renamed file
+                BASE_FILE_PATH="${REST%:*}"
+                HEAD_FILE_PATH="${REST#*:}"
+                DISPLAY_NAME="$HEAD_FILE_PATH (renamed from $BASE_FILE_PATH)"
+                ;;
+              C)
+                # Copied file
+                BASE_FILE_PATH="${REST%:*}"
+                HEAD_FILE_PATH="${REST#*:}"
+                DISPLAY_NAME="$HEAD_FILE_PATH (copied from $BASE_FILE_PATH)"
+                ;;
+            esac
 
             echo "Processing: $DISPLAY_NAME"
 
             # Get file contents from both commits
-            BASE_FILE=$(git show "$BASE_SHA:$BASE_FILE_PATH" 2>/dev/null)
+            if [ -z "$BASE_FILE_PATH" ]; then
+              # New file - use empty base
+              BASE_FILE=""
+            else
+              BASE_FILE=$(git show "$BASE_SHA:$BASE_FILE_PATH" 2>/dev/null)
+            fi
             HEAD_FILE=$(git show "$HEAD_SHA:$HEAD_FILE_PATH" 2>/dev/null)
 
             # Create temp files for diff
