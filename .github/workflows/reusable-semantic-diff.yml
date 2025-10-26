@@ -66,15 +66,6 @@ jobs:
           echo "Difftastic version $VERSION installed successfully"
           difft --version
 
-      - name: Install image generation tools
-        run: |
-          # Install ImageMagick for image manipulation
-          sudo apt-get update
-          sudo apt-get install -y imagemagick fonts-dejavu-core
-
-          # Install ansi2html for better terminal rendering
-          pip install ansi2html
-
       - name: Get list of changed files
         id: changed-files
         run: |
@@ -526,9 +517,13 @@ jobs:
           edit-mode: replace
           body-path: diff_output/pr_comment.md
 
-      - name: Install playwright for HTML to image conversion
+      - name: Install image generation dependencies
         if: hashFiles('diff_output/image_list.txt') != ''
         run: |
+          # Install ansi2html for converting terminal colors to HTML
+          pip install ansi2html
+
+          # Install Playwright for HTML to PNG conversion
           npm install -g playwright
           playwright install chromium
 
