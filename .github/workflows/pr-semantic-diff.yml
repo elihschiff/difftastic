@@ -1,5 +1,9 @@
 name: PR Semantic Diff
 
+# This workflow runs on all pull requests to generate semantic diffs
+# using difftastic, which understands syntax and provides better diffs
+# than traditional line-based diff tools.
+
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -11,3 +15,8 @@ permissions:
 jobs:
   semantic-diff:
     uses: ./.github/workflows/reusable-semantic-diff.yml
+    # You can customize the behavior by passing inputs:
+    # with:
+    #   difftastic-version: '0.66.0'  # Pin to specific version
+    #   file-patterns: '.*\.(rs|py|js)$'  # Only diff certain file types
+    #   exclude-patterns: 'test.*|.*\.md$'  # Exclude certain patterns
