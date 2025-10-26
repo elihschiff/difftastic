@@ -546,9 +546,9 @@ jobs:
           # Install ansi2html for converting terminal colors to HTML
           pip install ansi2html
 
-          # Install Playwright for HTML to PNG conversion
-          npm install -g playwright
-          playwright install chromium
+          # Install Playwright locally (not globally) for the Node.js script
+          npm install playwright
+          npx playwright install chromium
 
       - name: Convert ANSI to HTML
         if: hashFiles('diff_output/image_list.txt') != ''
