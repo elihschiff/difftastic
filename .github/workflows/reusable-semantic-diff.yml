@@ -366,16 +366,14 @@ jobs:
               # Escape for HTML
               ESCAPED_DIFF=$(echo "$DIFF_OUTPUT" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
 
-              # Generate image for this diff
+              # Save diff output for later image generation
               SAFE_FILENAME=$(echo "$file" | sed 's/[\/\.]/_/g')
-              IMAGE_FILE="diff_output/images/${SAFE_FILENAME}.png"
 
-              # Convert ANSI colored output to HTML, then to image
-              echo "$DIFF_OUTPUT" | ansi2html --inline > "diff_output/images/${SAFE_FILENAME}.html"
+              # Store the colored diff output for image generation later
+              echo "$DIFF_OUTPUT" > "diff_output/images/${SAFE_FILENAME}.ansi"
 
-              # Use wkhtmltoimage or convert HTML to image with headless browser
-              # For simplicity, we'll store the HTML and convert them all at the end
-              echo "$IMAGE_FILE" >> diff_output/image_list.txt
+              # Track this file for image generation
+              echo "${SAFE_FILENAME}:${DISPLAY_NAME}" >> diff_output/image_list.txt
 
               # Add to HTML
               cat >> "$HTML_FILE" << HTMLPART
@@ -527,7 +525,21 @@ jobs:
           npm install -g playwright
           playwright install chromium
 
-      - name: Convert diff HTML to images
+      - name: Convert ANSI to HTML
+        if: hashFiles('diff_output/image_list.txt') != ''
+        run: |
+          # Convert all .ansi files to .html using ansi2html
+          cd diff_output/images
+          for ansi_file in *.ansi; do
+            if [ -f "$ansi_file" ]; then
+              html_file="${ansi_file%.ansi}.html"
+              cat "$ansi_file" | ansi2html --inline > "$html_file"
+              echo "Converted $ansi_file to $html_file"
+            fi
+          done
+          cd ../..
+
+      - name: Convert HTML to images
         if: hashFiles('diff_output/image_list.txt') != ''
         run: |
           # Create a Node.js script to convert HTML to images
